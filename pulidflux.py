@@ -72,7 +72,27 @@ def forward_orig(
     y: Tensor,
     guidance: Tensor = None,
     control=None,
+    *args,     # <--- Catches extra positional arguments (The "10th" argument)
+    **kwargs,  # <--- Catches extra named arguments
 ) -> Tensor:
+    # --- SAFE EXTRACTION START ---
+    # 1. Look for variables in the named bucket
+    attn_mask = kwargs.get("attn_mask")
+    transformer_options = kwargs.get("transformer_options", {})
+    
+    # 2. If transformer_options is missing, it might be the first extra positional arg
+    if not transformer_options and len(args) > 0:
+        # Heuristic: ComfyUI often passes transformer_options as the next positional arg
+        if isinstance(args[0], dict):
+            transformer_options = args[0]
+            
+    # 3. If attn_mask is still missing, check if it is the second extra arg
+    if attn_mask is None and len(args) > 1:
+        attn_mask = args[1]
+    # --- SAFE EXTRACTION END ---
+
+    patches_replace = transformer_options.get("patches_replace", {})
+
     if img.ndim != 3 or txt.ndim != 3:
         raise ValueError("Input img and txt tensors must have 3 dimensions.")
 
@@ -92,7 +112,10 @@ def forward_orig(
 
     ca_idx = 0
     for i, block in enumerate(self.double_blocks):
-        img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
+        try:
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, attn_mask=attn_mask)
+        except TypeError:
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
 
         if control is not None: # Controlnet
             control_i = control.get("input")
@@ -104,7 +127,6 @@ def forward_orig(
         # PuLID attention
         if self.pulid_data:
             if i % self.pulid_double_interval == 0:
-                # Will calculate influence of all pulid nodes at once
                 for _, node_data in self.pulid_data.items():
                     if torch.any((node_data['sigma_start'] >= timesteps) & (timesteps >= node_data['sigma_end'])):
                         img = img + node_data['weight'] * self.pulid_ca[ca_idx](node_data['embedding'], img)
@@ -113,7 +135,10 @@ def forward_orig(
     img = torch.cat((txt, img), 1)
 
     for i, block in enumerate(self.single_blocks):
-        img = block(img, vec=vec, pe=pe)
+        try:
+             img = block(img, vec=vec, pe=pe, attn_mask=attn_mask)
+        except TypeError:
+             img = block(img, vec=vec, pe=pe)
 
         if control is not None: # Controlnet
             control_o = control.get("output")
@@ -126,7 +151,6 @@ def forward_orig(
         if self.pulid_data:
             real_img, txt = img[:, txt.shape[1]:, ...], img[:, :txt.shape[1], ...]
             if i % self.pulid_single_interval == 0:
-                # Will calculate influence of all nodes at once
                 for _, node_data in self.pulid_data.items():
                     if torch.any((node_data['sigma_start'] >= timesteps) & (timesteps >= node_data['sigma_end'])):
                         real_img = real_img + node_data['weight'] * self.pulid_ca[ca_idx](node_data['embedding'], real_img)
@@ -135,7 +159,7 @@ def forward_orig(
 
     img = img[:, txt.shape[1] :, ...]
 
-    img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
+    img = self.final_layer(img, vec)
     return img
 
 def tensor_to_image(tensor):
