@@ -72,24 +72,16 @@ def forward_orig(
     y: Tensor,
     guidance: Tensor = None,
     control=None,
-    *args,     # <--- Catches extra positional arguments (The "10th" argument)
-    **kwargs,  # <--- Catches extra named arguments
+    *args,
+    **kwargs,
 ) -> Tensor:
-    # --- SAFE EXTRACTION START ---
-    # 1. Look for variables in the named bucket
+    # Safe Extraction
     attn_mask = kwargs.get("attn_mask")
     transformer_options = kwargs.get("transformer_options", {})
-    
-    # 2. If transformer_options is missing, it might be the first extra positional arg
-    if not transformer_options and len(args) > 0:
-        # Heuristic: ComfyUI often passes transformer_options as the next positional arg
-        if isinstance(args[0], dict):
-            transformer_options = args[0]
-            
-    # 3. If attn_mask is still missing, check if it is the second extra arg
+    if not transformer_options and len(args) > 0 and isinstance(args[0], dict):
+        transformer_options = args[0]
     if attn_mask is None and len(args) > 1:
         attn_mask = args[1]
-    # --- SAFE EXTRACTION END ---
 
     patches_replace = transformer_options.get("patches_replace", {})
 
@@ -117,19 +109,28 @@ def forward_orig(
         except TypeError:
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
 
-        if control is not None: # Controlnet
+        if control is not None: 
             control_i = control.get("input")
             if i < len(control_i):
                 add = control_i[i]
                 if add is not None:
                     img += add
 
-        # PuLID attention
+        # PuLID attention with DEVICE FIX
         if self.pulid_data:
             if i % self.pulid_double_interval == 0:
                 for _, node_data in self.pulid_data.items():
                     if torch.any((node_data['sigma_start'] >= timesteps) & (timesteps >= node_data['sigma_end'])):
-                        img = img + node_data['weight'] * self.pulid_ca[ca_idx](node_data['embedding'], img)
+                        # --- FIX START: FORCE MOVE TO GPU ---
+                        layer = self.pulid_ca[ca_idx]
+                        # Move the layer to the same device as the image
+                        if layer.norm.weight.device != img.device:
+                            layer.to(img.device)
+                        # Ensure the embedding is also on the right device
+                        embedding = node_data['embedding'].to(img.device)
+                        
+                        img = img + node_data['weight'] * layer(embedding, img)
+                        # --- FIX END ---
                 ca_idx += 1
 
     img = torch.cat((txt, img), 1)
@@ -140,20 +141,27 @@ def forward_orig(
         except TypeError:
              img = block(img, vec=vec, pe=pe)
 
-        if control is not None: # Controlnet
+        if control is not None: 
             control_o = control.get("output")
             if i < len(control_o):
                 add = control_o[i]
                 if add is not None:
                     img[:, txt.shape[1] :, ...] += add
 
-        # PuLID attention
+        # PuLID attention with DEVICE FIX
         if self.pulid_data:
             real_img, txt = img[:, txt.shape[1]:, ...], img[:, :txt.shape[1], ...]
             if i % self.pulid_single_interval == 0:
                 for _, node_data in self.pulid_data.items():
                     if torch.any((node_data['sigma_start'] >= timesteps) & (timesteps >= node_data['sigma_end'])):
-                        real_img = real_img + node_data['weight'] * self.pulid_ca[ca_idx](node_data['embedding'], real_img)
+                        # --- FIX START: FORCE MOVE TO GPU ---
+                        layer = self.pulid_ca[ca_idx]
+                        if layer.norm.weight.device != real_img.device:
+                            layer.to(real_img.device)
+                        embedding = node_data['embedding'].to(real_img.device)
+                        
+                        real_img = real_img + node_data['weight'] * layer(embedding, real_img)
+                        # --- FIX END ---
                 ca_idx += 1
             img = torch.cat((txt, real_img), 1)
 
