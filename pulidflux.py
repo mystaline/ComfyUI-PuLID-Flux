@@ -123,12 +123,11 @@ def forward_orig(
                     if torch.any((node_data['sigma_start'] >= timesteps) & (timesteps >= node_data['sigma_end'])):
                         # --- FIX START: FORCE MOVE TO GPU ---
                         layer = self.pulid_ca[ca_idx]
-                        # Move the layer to the same device as the image
-                        if layer.norm.weight.device != img.device:
+                        # Check device using 'to_q' which definitely exists
+                        if layer.to_q.weight.device != img.device:
                             layer.to(img.device)
-                        # Ensure the embedding is also on the right device
-                        embedding = node_data['embedding'].to(img.device)
                         
+                        embedding = node_data['embedding'].to(img.device)
                         img = img + node_data['weight'] * layer(embedding, img)
                         # --- FIX END ---
                 ca_idx += 1
@@ -156,10 +155,11 @@ def forward_orig(
                     if torch.any((node_data['sigma_start'] >= timesteps) & (timesteps >= node_data['sigma_end'])):
                         # --- FIX START: FORCE MOVE TO GPU ---
                         layer = self.pulid_ca[ca_idx]
-                        if layer.norm.weight.device != real_img.device:
+                        # Check device using 'to_q' which definitely exists
+                        if layer.to_q.weight.device != real_img.device:
                             layer.to(real_img.device)
-                        embedding = node_data['embedding'].to(real_img.device)
                         
+                        embedding = node_data['embedding'].to(real_img.device)
                         real_img = real_img + node_data['weight'] * layer(embedding, real_img)
                         # --- FIX END ---
                 ca_idx += 1
